@@ -214,16 +214,16 @@ public class S3Controller implements Controller {
         if (StringUtils.isBlank(id)) {
             bucket.delete();
         } else {
-            deleteObject(ctx, bucket, id);
+            deleteObject(bucket, id);
         }
-    }
-
-    private void deleteObject(final WebContext ctx, final Bucket bucket, final String id) {
-        StoredObject object = bucket.getObject(id);
-        object.delete();
 
         ctx.respondWith().status(HttpResponseStatus.OK);
         signalObjectSuccess(ctx);
+    }
+
+    private void deleteObject(final Bucket bucket, final String id) {
+        StoredObject object = bucket.getObject(id);
+        object.delete();
     }
 
     /**

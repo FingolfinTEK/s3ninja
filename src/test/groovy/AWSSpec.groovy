@@ -24,9 +24,6 @@ import sirius.kernel.BaseSpecification
 class AWSSpec extends BaseSpecification {
 
 
-    public static
-    final ByteArrayInputStream TEST_DATA = new ByteArrayInputStream("Test".getBytes(Charsets.UTF_8))
-
     public AmazonS3Client getClient() {
         AWSCredentials credentials = new BasicAWSCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY");
         AmazonS3Client newClient = new AmazonS3Client(credentials,
@@ -41,11 +38,18 @@ class AWSSpec extends BaseSpecification {
         given:
             def client = getClient();
         when:
-            client.putObject("test", "test", TEST_DATA, new ObjectMetadata());
-
-        def content = contentAsString(client.getObject("test", "test"));
+            client.putObject("test", "test", testData(), emptyMetadata());
+            def content = contentAsString(client.getObject("test", "test"));
         then:
             content == "Test"
+    }
+
+    private static ByteArrayInputStream testData() {
+        new ByteArrayInputStream("Test".getBytes(Charsets.UTF_8))
+    }
+
+    private static ObjectMetadata emptyMetadata() {
+        new ObjectMetadata()
     }
 
     private static String contentAsString(S3Object object) {
@@ -56,7 +60,7 @@ class AWSSpec extends BaseSpecification {
         given:
             def client = getClient();
         when:
-            client.putObject("test", "test", TEST_DATA, new ObjectMetadata());
+            client.putObject("test", "test", testData(), emptyMetadata());
             client.deleteBucket("test");
             client.getObject("test", "test");
         then:
@@ -68,7 +72,7 @@ class AWSSpec extends BaseSpecification {
         given:
             def client = getClient();
         when:
-            client.putObject("test", "test", TEST_DATA, new ObjectMetadata());
+            client.putObject("test", "test", testData(), emptyMetadata());
             def objects = client.listObjects("test").getObjectSummaries();
         then:
             objects.size() == 1
