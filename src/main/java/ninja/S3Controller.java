@@ -26,7 +26,6 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 import org.apache.commons.lang3.StringUtils;
@@ -54,11 +53,6 @@ import static ninja.AwsHashCalculator.AWS_AUTH_PATTERN;
 @Register
 public class S3Controller implements Controller {
 
-    @Override
-    public void onError(WebContext ctx, HandledException error) {
-        signalObjectError(ctx, HttpResponseStatus.BAD_REQUEST, error.getMessage());
-    }
-
     @Part
     private Storage storage;
 
@@ -68,7 +62,10 @@ public class S3Controller implements Controller {
     @Part
     private AwsHashCalculator hashCalculator;
 
-    private Map<String, ReentrantLock> locks = Maps.newConcurrentMap();
+    @Override
+    public void onError(WebContext ctx, HandledException error) {
+        signalObjectError(ctx, HttpResponseStatus.BAD_REQUEST, error.getMessage());
+    }
 
     /*
      * Computes the AWS Version 4 signing hash
@@ -136,45 +133,14 @@ public class S3Controller implements Controller {
                 return;
             }
         }
-        String id = idList.stream().collect(Collectors.joining("/")).replace('/', '_');
-        if (Strings.isEmpty(id)) {
-            // if it's a request to the bucket, it's usually a bucket create command.
-            // As we allow bucket creation, thus send a positive response
-            if (ctx.getRequest().getMethod() == HttpMethod.HEAD
-                || ctx.getRequest().getMethod() == HttpMethod.GET) {
-                signalObjectSuccess(ctx);
-                ctx.respondWith().status(HttpResponseStatus.OK);
-                return;
-            }
 
-            signalObjectError(ctx, HttpResponseStatus.NOT_FOUND, "Please provide an object id");
-        }
-        String hash = getAuthHash(ctx);
-        if (hash != null) {
-            String expectedHash = computeHash(ctx, "");
-            String alternativeHash = computeHash(ctx, "/s3");
-            if (!expectedHash.equals(hash) && !alternativeHash.equals(hash)) {
-                ctx.respondWith()
-                    .error(HttpResponseStatus.UNAUTHORIZED,
-                        Strings
-                            .apply("Invalid Hash (Expected: %s, Found: %s)", expectedHash, hash));
-                log.log("OBJECT " + ctx.getRequest().getMethod().name(),
-                    ctx.getRequestedURI(),
-                    APILog.Result.REJECTED,
-                    CallContext.getCurrent().getWatch());
-                return;
-            }
-        }
-        if (bucket.isPrivate() && !ctx.get("noAuth").isFilled() && hash == null) {
-            ctx.respondWith().error(HttpResponseStatus.UNAUTHORIZED, "Authentication required");
-            log.log("OBJECT " + ctx.getRequest().getMethod().name(),
-                ctx.getRequestedURI(),
-                APILog.Result.REJECTED,
-                CallContext.getCurrent().getWatch());
+        if (requestUnauthorized(ctx, bucket)) {
             return;
         }
+
+        String id = idList.stream().collect(Collectors.joining("/")).replace('/', '_');
         if (ctx.getRequest().getMethod() == HttpMethod.GET) {
-            getObject(ctx, bucket, id, true);
+            handleGetRequestFor(ctx, bucket, id);
         } else if (ctx.getRequest().getMethod() == HttpMethod.PUT) {
             Value copy = ctx.getHeaderValue("x-amz-copy-source");
             if (copy.isFilled()) {
@@ -191,8 +157,49 @@ public class S3Controller implements Controller {
         }
     }
 
+    private void handleGetRequestFor(final WebContext ctx, final Bucket bucket, final String id)
+        throws Exception {
+        if (StringUtils.isNotBlank(id)) {
+            getObject(ctx, bucket, id, true);
+        } else {
+            listBucket(ctx, bucket);
+        }
+    }
+
+    private boolean requestUnauthorized(final WebContext ctx, final Bucket bucket) {
+        final String hash = getAuthHash(ctx);
+        if (hash != null && isHashInvalid(ctx, hash)) {
+            respondWithUnauthorizedMessage(ctx, "Invalid Hash " + hash);
+            return true;
+        }
+
+        if (bucket.isPrivate() && !ctx.get("noAuth").isFilled() && hash == null) {
+            respondWithUnauthorizedMessage(ctx, "Authentication required");
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isHashInvalid(final WebContext ctx, final String hash) {
+        String expectedHash = computeHash(ctx, "");
+        String alternativeHash = computeHash(ctx, "/s3");
+        return !expectedHash.equals(hash) && !alternativeHash.equals(hash);
+    }
+
     private String computeHash(WebContext ctx, String pathPrefix) {
         return hashCalculator.computeHash(ctx, pathPrefix);
+    }
+
+    private void respondWithUnauthorizedMessage(final WebContext ctx, final String message) {
+        ctx.respondWith().error(HttpResponseStatus.UNAUTHORIZED, message);
+        logRejectedRequest(ctx);
+    }
+
+    private void logRejectedRequest(final WebContext ctx) {
+        log.log("OBJECT " + ctx.getRequest().getMethod().name(),
+            ctx.getRequestedURI(),
+            APILog.Result.REJECTED,
+            CallContext.getCurrent().getWatch());
     }
 
     /**
@@ -234,11 +241,8 @@ public class S3Controller implements Controller {
             return;
         }
         try {
-            FileOutputStream out = new FileOutputStream(object.getFile());
-            try {
+            try (FileOutputStream out = new FileOutputStream(object.getFile())) {
                 ByteStreams.copy(inputStream, out);
-            } finally {
-                out.close();
             }
         } finally {
             inputStream.close();
@@ -268,7 +272,8 @@ public class S3Controller implements Controller {
         }
 
         object.storeProperties(properties);
-        ctx.respondWith().addHeader(HttpHeaders.Names.ETAG, etag(hash)).status(HttpResponseStatus.OK);
+        ctx.respondWith().addHeader(HttpHeaders.Names.ETAG, etag(hash))
+            .status(HttpResponseStatus.OK);
         signalObjectSuccess(ctx);
     }
 
@@ -277,8 +282,8 @@ public class S3Controller implements Controller {
     }
 
     private DateTimeFormatter dateTimeFormatter =
-            new DateTimeFormatterBuilder().appendPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").toFormatter()
-                    .withChronology(IsoChronology.INSTANCE).withZone(ZoneOffset.UTC);
+        new DateTimeFormatterBuilder().appendPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").toFormatter()
+            .withChronology(IsoChronology.INSTANCE).withZone(ZoneOffset.UTC);
 
     /**
      * Handles GET /bucket/id with an <tt>x-amz-copy-source</tt> header.
@@ -318,16 +323,22 @@ public class S3Controller implements Controller {
         }
         HashCode hash = Files.hash(object.getFile(), Hashing.md5());
         String etag = etag(hash);
-        XMLStructuredOutput structuredOutput = ctx.respondWith().addHeader(HttpHeaders.Names.ETAG, etag).xml();
+        XMLStructuredOutput structuredOutput =
+            ctx.respondWith().addHeader(HttpHeaders.Names.ETAG, etag).xml();
         structuredOutput.beginOutput("CopyObjectResult");
-        structuredOutput.beginObject("LastModified");
-        structuredOutput.text(dateTimeFormatter.format(object.getLastModifiedInstant()));
-        structuredOutput.endObject();
+        writeLastModifiedToXml(structuredOutput, object);
         structuredOutput.beginObject("ETag");
         structuredOutput.text(etag);
         structuredOutput.endObject();
         structuredOutput.endOutput();
         signalObjectSuccess(ctx);
+    }
+
+    private void writeLastModifiedToXml(
+        final XMLStructuredOutput xmlStructuredOutput, final StoredObject object) {
+        xmlStructuredOutput.beginObject("LastModified");
+        xmlStructuredOutput.text(dateTimeFormatter.format(object.getLastModifiedInstant()));
+        xmlStructuredOutput.endObject();
     }
 
     /**
@@ -354,5 +365,32 @@ public class S3Controller implements Controller {
             response.status(HttpResponseStatus.OK);
         }
         signalObjectSuccess(ctx);
+    }
+
+    private void listBucket(final WebContext ctx, final Bucket bucket) {
+        List<StoredObject> objects = bucket.getObjects();
+                                                                           
+        Response response = ctx.respondWith();
+        XMLStructuredOutput structuredOutput = response.xml();
+        structuredOutput.beginOutput("ListBucketResult");
+        writeBucketNameToXml(bucket, structuredOutput);
+        objects.forEach(o -> writeObjectAsXml(structuredOutput, o));
+        structuredOutput.endOutput();
+        signalObjectSuccess(ctx);
+    }
+
+    private void writeBucketNameToXml(final Bucket bucket, final XMLStructuredOutput xmlOutput) {
+        xmlOutput.beginObject("Name");
+        xmlOutput.text(bucket.getName());
+        xmlOutput.endObject();
+    }
+
+    private void writeObjectAsXml(final XMLStructuredOutput xmlOutput, final StoredObject object) {
+        xmlOutput.beginObject("Contents");
+        xmlOutput.beginObject("Key");
+        xmlOutput.text(object.getName());
+        xmlOutput.endObject();
+        writeLastModifiedToXml(xmlOutput, object);
+        xmlOutput.endObject();
     }
 }
