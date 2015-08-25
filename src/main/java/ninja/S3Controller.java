@@ -147,6 +147,8 @@ public class S3Controller implements Controller {
             } else {
                 signalObjectError(ctx, HttpResponseStatus.NOT_FOUND, "Bucket does not exist");
             }
+        } else if (GET == method) {
+            listBucket(ctx, bucket);
         } else if (DELETE == method) {
             bucket.delete();
             signalObjectSuccess(ctx);
@@ -282,7 +284,8 @@ public class S3Controller implements Controller {
         List<String> ids = new ArrayList<>();
         ids.add(objectId);
         ids.addAll(idList);
-        return ids.stream().filter(i -> Strings.isFilled(i)).collect(Collectors.joining("/")).replace('/', '_');
+        return ids.stream().filter(Strings::isFilled)
+            .collect(Collectors.joining("/")).replace('/', '_');
     }
 
     private boolean objectCheckAuth(WebContext ctx, Bucket bucket) {
@@ -417,16 +420,22 @@ public class S3Controller implements Controller {
         }
         HashCode hash = Files.hash(object.getFile(), Hashing.md5());
         String etag = etag(hash);
-        XMLStructuredOutput structuredOutput = ctx.respondWith().addHeader(HttpHeaders.Names.ETAG, etag).xml();
+        XMLStructuredOutput structuredOutput =
+            ctx.respondWith().addHeader(HttpHeaders.Names.ETAG, etag).xml();
         structuredOutput.beginOutput("CopyObjectResult");
-        structuredOutput.beginObject("LastModified");
-        structuredOutput.text(dateTimeFormatter.format(object.getLastModifiedInstant()));
-        structuredOutput.endObject();
+        writeLastModifiedToXml(structuredOutput, object);
         structuredOutput.beginObject("ETag");
         structuredOutput.text(etag);
         structuredOutput.endObject();
         structuredOutput.endOutput();
         signalObjectSuccess(ctx);
+    }
+
+    private void writeLastModifiedToXml(
+        final XMLStructuredOutput xmlStructuredOutput, final StoredObject object) {
+        xmlStructuredOutput.beginObject("LastModified");
+        xmlStructuredOutput.text(dateTimeFormatter.format(object.getLastModifiedInstant()));
+        xmlStructuredOutput.endObject();
     }
 
     /**
@@ -452,6 +461,32 @@ public class S3Controller implements Controller {
             response.status(HttpResponseStatus.OK);
         }
         signalObjectSuccess(ctx);
+    }
+
+    private void listBucket(final WebContext ctx, final Bucket bucket) {
+        List<StoredObject> objects = bucket.getObjects();
+        Response response = ctx.respondWith();
+        XMLStructuredOutput structuredOutput = response.xml();
+        structuredOutput.beginOutput("ListBucketResult");
+        writeBucketNameToXml(bucket, structuredOutput);
+        objects.forEach(o -> writeObjectAsXml(structuredOutput, o));
+        structuredOutput.endOutput();
+        signalObjectSuccess(ctx);
+    }
+
+    private void writeBucketNameToXml(final Bucket bucket, final XMLStructuredOutput xmlOutput) {
+        xmlOutput.beginObject("Name");
+        xmlOutput.text(bucket.getName());
+        xmlOutput.endObject();
+    }
+
+    private void writeObjectAsXml(final XMLStructuredOutput xmlOutput, final StoredObject object) {
+        xmlOutput.beginObject("Contents");
+        xmlOutput.beginObject("Key");
+        xmlOutput.text(object.getName());
+        xmlOutput.endObject();
+        writeLastModifiedToXml(xmlOutput, object);
+        xmlOutput.endObject();
     }
 
     /**

@@ -117,4 +117,23 @@ class AWSSpec extends BaseSpecification {
             AmazonS3Exception e = thrown();
             e.message == "Not Found (Service: Amazon S3; Status Code: 404; Error Code: 404 Not Found; Request ID: null)"
     }
+
+    def "PUT and then List Bucket work as expected with AWS4 signer"() {
+        given:
+        def client = getClient();
+        when:
+        client.putObject("test", "test", testData(), emptyMetadata());
+        def objects = client.listObjects("test").getObjectSummaries();
+        then:
+        objects.size() == 1
+        objects[0].key == "test"
+    }
+
+    private static ByteArrayInputStream testData() {
+        new ByteArrayInputStream("Test".getBytes(Charsets.UTF_8))
+    }
+
+    private static ObjectMetadata emptyMetadata() {
+        new ObjectMetadata()
+    }
 }
