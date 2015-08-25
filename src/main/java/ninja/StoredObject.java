@@ -8,10 +8,12 @@
 
 package ninja;
 
+import sirius.kernel.health.Exceptions;
 import sirius.kernel.nls.NLS;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.time.Instant;
@@ -21,9 +23,6 @@ import java.util.Set;
 
 /**
  * Represents a stored object.
- *
- * @author Andreas Haufler (aha@scireum.de)
- * @since 2013/08
  */
 public class StoredObject {
     private File file;
@@ -105,13 +104,11 @@ public class StoredObject {
      */
     public Set<Map.Entry<Object, Object>> getProperties() throws Exception {
         Properties props = new Properties();
-        FileInputStream in = new FileInputStream(getPropertiesFile());
-        try {
+        try (FileInputStream in = new FileInputStream(getPropertiesFile())) {
             props.load(in);
-        } finally {
-            in.close();
+        } catch (FileNotFoundException e) {
+            Exceptions.ignore(e);
         }
-
         return props.entrySet();
     }
 
@@ -132,12 +129,9 @@ public class StoredObject {
      */
     public void storeProperties(Map<String, String> properties) throws IOException {
         Properties props = new Properties();
-        props.putAll(properties);
-        FileOutputStream out = new FileOutputStream(getPropertiesFile());
-        try {
+        properties.entrySet().stream().forEach(e -> props.setProperty(e.getKey(), e.getValue()));
+        try (FileOutputStream out = new FileOutputStream(getPropertiesFile())) {
             props.store(out, "");
-        } finally {
-            out.close();
         }
     }
 }
